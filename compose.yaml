@@ -1,0 +1,24 @@
+# Coolify deploys this directly. The only thing that must survive a redeploy is /data.
+services:
+  csm-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      # Coolify recognises :? and blocks deployment until both required values are set.
+      CSM_TELEGRAM_TOKEN: ${CSM_TELEGRAM_TOKEN:?}
+      CSM_TELEGRAM_CHAT_ID: ${CSM_TELEGRAM_CHAT_ID:?}
+      # Comma-separated, tried in order. A private endpoint should be first: public RPCs throttle
+      # datacenter IPs far harder than residential ones.
+      CSM_RPC_URLS: ${CSM_RPC_URLS:-}
+      CSM_BRIEF_WEEKDAY: ${CSM_BRIEF_WEEKDAY:-0}
+      CSM_BRIEF_HOUR_UTC: ${CSM_BRIEF_HOUR_UTC:-7}
+      CSM_COLLECT_HOUR_UTC: ${CSM_COLLECT_HOUR_UTC:-6}
+      CSM_DB_PATH: /data/csm.db
+      CSM_IPFS_CACHE_DIR: /data/ipfs
+      CSM_ROUNDS: ${CSM_ROUNDS:-}
+      CSM_PINATA_JWT: ${CSM_PINATA_JWT:-}
+    volumes:
+      - csm-data:/data
+
+volumes:
+  csm-data:

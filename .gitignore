@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Secrets and local environment. Keep the one safe, public template.
+.env
+.env.*
+!.env.example
+
+# Runtime state
+*.db
+*.db-wal
+*.db-shm
+data/
+*.log
+
+# Local test/tool output
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Internal operating notes: useful locally, not part of the public product repo.
+DEPLOY.md
+HANDOFF.md
+
+# macOS clutter
+.DS_Store

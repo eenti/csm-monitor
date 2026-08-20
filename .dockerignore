@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+.DS_Store
+DEPLOY.md
+HANDOFF.md
+tests/
+__pycache__/
+*.py[cod]
+*.db
+*.db-wal
+*.db-shm
+data/
+*.log
