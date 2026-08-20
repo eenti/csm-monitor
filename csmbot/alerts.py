@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
-from .brief import _link, _operator_link, _plural, ETHERSCAN_BLOCK, IPFS_VIEW
+from .brief import (
+    _frame_interval_label, _link, _operator_link, _performance_lines, _plural,
+    ETHERSCAN_BLOCK, IPFS_VIEW,
+)
 from .metrics import Report, curve_name
 
 RUNWAY_STEPS = (30, 14, 7)
@@ -105,7 +108,7 @@ def frame_late(report: Report) -> list[Alert]:
         key="frame:late",
         text=(
             f"⏰ <b>Rewards frame overdue</b>\n"
-            f"{frame.hours_late:.0f}h past {frame.deadline:%d %b %H:%M} UTC"
+            f"{frame.hours_late:.0f} hours past {frame.deadline:%d %b %H:%M} UTC"
         ),
         payload={"hours_late": frame.hours_late},
     )]
@@ -120,20 +123,11 @@ def frame_published(report: Report, store) -> list[Alert]:
     if store.already_delivered("alert", key):
         return []
 
-    off = (
-        "" if performance.interval_days == 28
-        else f" · {performance.interval_days - 28:+d}d off cadence"
-    )
     lines = [
-        f"💰 <b>Frame {performance.frame_date} published</b> ({performance.interval_days}d{off})",
-        f"{performance.earned} earned · {performance.first_time} first time",
+        f"💰 <b>Frame {performance.frame_date} published</b> "
+        f"({_frame_interval_label(performance.interval_days)})",
+        *_performance_lines(performance),
     ]
-    if performance.stopped is not None:
-        lines.append(f"{performance.stopped} stopped · {performance.resumed} resumed")
-    lines.append(
-        f"{performance.idle_retired + performance.idle_running} earned nothing — "
-        f"{performance.idle_retired} retired · {performance.idle_running} still running"
-    )
     return [Alert(key=key, text="\n".join(lines), payload={"frame": performance.frame_date})]
 
 

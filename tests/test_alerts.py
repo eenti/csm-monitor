@@ -209,7 +209,7 @@ class TestFrameAlerts(unittest.TestCase):
         report = make_report(frame=make_frame(is_late=True, hours_late=40))
         fired = alerts.frame_late(report)
         self.assertEqual(len(fired), 1)
-        self.assertIn("40h past", fired[0].text)
+        self.assertIn("40 hours past", fired[0].text)
 
     def test_on_time_frame_silent(self):
         self.assertEqual(alerts.frame_late(make_report()), [])
@@ -223,8 +223,12 @@ class TestFrameAlerts(unittest.TestCase):
         )
         fired = alerts.frame_published(report, self.store)
         self.assertEqual(len(fired), 1)
-        self.assertIn("154 retired", fired[0].text)
-        self.assertIn("5 still running", fired[0].text)
+        self.assertIn("19 operators earned rewards last frame, not this one", fired[0].text)
+        self.assertIn("7 operators earned rewards this frame after missing the last", fired[0].text)
+        self.assertIn("154 operators earned no rewards · no active validators now", fired[0].text)
+        self.assertIn("5 operators earned no rewards · active validators now", fired[0].text)
+        self.assertNotIn("stopped", fired[0].text)
+        self.assertNotIn("resumed", fired[0].text)
 
         self.store.record_delivery("alert", fired[0].key, fired[0].text)
         self.assertEqual(alerts.frame_published(report, self.store), [])
@@ -236,7 +240,7 @@ class TestFrameAlerts(unittest.TestCase):
             operators_in_tree=499, earned=368, earned_nothing=129, first_time=2,
             stopped=21, resumed=19, idle_retired=120, idle_running=9,
         )
-        self.assertIn("+3d off cadence", alerts.frame_published(report, self.store)[0].text)
+        self.assertIn("31 days; expected 28", alerts.frame_published(report, self.store)[0].text)
 
 
 class TestExitAnomaly(unittest.TestCase):

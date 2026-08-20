@@ -21,7 +21,7 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 
-from .metrics import Report, curve_name
+from .metrics import Performance, Report, curve_name
 
 RUNWAY_ALERT_DAYS = 30
 ETHERSCAN_ADDRESS = "https://etherscan.io/address/{}"
@@ -322,31 +322,55 @@ def _pools_block(report: Report) -> list[str]:
     ]
 
 
+def _frame_interval_label(interval_days: int) -> str:
+    if interval_days == 28:
+        return "28 days"
+    return f"{interval_days} days; expected 28"
+
+
+def _performance_lines(performance: Performance) -> list[str]:
+    """Describe reward transitions without making the reader decode status labels.
+
+    The final two lines deliberately describe current validator state, not when an operator exited:
+    the cumulative rewards tree proves that they earned nothing, while the live snapshot only proves
+    whether they have active validators now.
+    """
+    lines = [
+        f"{_plural(performance.earned, 'returning operator')} earned rewards",
+        f"{_plural(performance.first_time, 'operator')} earned rewards for the first time",
+    ]
+    if performance.stopped is not None:
+        lines += [
+            f"{_plural(performance.stopped, 'operator')} earned rewards last frame, not this one",
+            f"{_plural(performance.resumed, 'operator')} earned rewards this frame after missing "
+            "the last",
+        ]
+    lines += [
+        f"{_plural(performance.idle_retired, 'operator')} earned no rewards · "
+        "no active validators now",
+        f"{_plural(performance.idle_running, 'operator')} earned no rewards · "
+        "active validators now",
+    ]
+    return lines
+
+
 def _performance_block(report: Report) -> list[str]:
     performance = report.performance
     if performance is None:
         return []
 
-    off = (
-        "" if performance.interval_days == 28
-        else f" · {performance.interval_days - 28:+d}d off cadence"
-    )
-    lines = [f"💰 <b>Frame {performance.frame_date}</b> ({performance.interval_days}d{off})"]
-    lines.append(f"{performance.earned} earned · {performance.first_time} first time")
-    if performance.stopped is not None:
-        lines.append(f"{performance.stopped} stopped · {performance.resumed} resumed")
-    # The split is the point. The raw idle count is dominated by retired operators the cumulative
-    # rewards tree never drops, and conflating them with underperformance makes it meaningless.
-    lines.append(
-        f"{performance.idle_retired + performance.idle_running} earned nothing — "
-        f"{performance.idle_retired} retired · {performance.idle_running} still running"
-    )
+    lines = [
+        f"💰 <b>Frame {performance.frame_date}</b> "
+        f"({_frame_interval_label(performance.interval_days)})",
+        *_performance_lines(performance),
+    ]
 
     frame = report.frame
     if frame is not None:
         lines.append(
-            f"⏳ {frame.hours_late:.0f}h overdue" if frame.is_late
-            else f"⏳ next {frame.deadline:%d %b} ({frame.hours_remaining / 24:.0f}d)"
+            f"⚠️ Frame overdue by {frame.hours_late:.0f} hours" if frame.is_late
+            else f"⏳ Next frame due {frame.deadline:%d %b} · "
+            f"{frame.hours_remaining / 24:.0f} days remaining"
         )
     return lines
 
@@ -358,8 +382,9 @@ def _frame_block(report: Report) -> list[str]:
         return []
     lines = ["💰 <b>Rewards frame</b>"]
     lines.append(
-        f"⚠️ {frame.hours_late:.0f}h past deadline" if frame.is_late
-        else f"⏳ next {frame.deadline:%d %b %H:%M} UTC ({frame.hours_remaining / 24:.0f}d)"
+        f"⚠️ Frame overdue by {frame.hours_late:.0f} hours" if frame.is_late
+        else f"⏳ Next frame due {frame.deadline:%d %b %H:%M} UTC · "
+        f"{frame.hours_remaining / 24:.0f} days remaining"
     )
     return lines
 

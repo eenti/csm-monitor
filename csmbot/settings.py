@@ -141,7 +141,7 @@ class RuntimeSettings:
             "<code>/round set 1 2026-09-08 ICS Round 6</code>",
             "<code>/round remove 1</code>",
             "",
-            "<i>Changes are saved in /data and apply immediately.</i>",
+            "<i>Changes apply immediately and survive redeploys.</i>",
         ]
         return "\n".join(lines)
 
@@ -149,16 +149,16 @@ class RuntimeSettings:
     def keyboard() -> dict:
         return {"inline_keyboard": [
             [
-                {"text": "◀ Weekly day", "callback_data": "cfg:brief_day:-1"},
-                {"text": "Weekly day ▶", "callback_data": "cfg:brief_day:1"},
+                {"text": "◀ Brief day", "callback_data": "cfg:brief_day:-1"},
+                {"text": "Brief day ▶", "callback_data": "cfg:brief_day:1"},
             ],
             [
-                {"text": "− Weekly hour", "callback_data": "cfg:brief_hour:-1"},
-                {"text": "+ Weekly hour", "callback_data": "cfg:brief_hour:1"},
+                {"text": "− Brief time", "callback_data": "cfg:brief_hour:-1"},
+                {"text": "+ Brief time", "callback_data": "cfg:brief_hour:1"},
             ],
             [
-                {"text": "− Collect hour", "callback_data": "cfg:collect_hour:-1"},
-                {"text": "+ Collect hour", "callback_data": "cfg:collect_hour:1"},
+                {"text": "− Collection time", "callback_data": "cfg:collect_hour:-1"},
+                {"text": "+ Collection time", "callback_data": "cfg:collect_hour:1"},
             ],
             [
                 {"text": "Rounds help", "callback_data": "cfg:rounds"},

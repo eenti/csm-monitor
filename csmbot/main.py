@@ -243,6 +243,15 @@ class Bot:
             except SettingsError as exc:
                 return f"⚠️ <b>Settings</b>\n{html.escape(str(exc))}"
 
+        report_commands = {
+            "status", "capacity", "funnel", "types", "cohorts", "strikes", "brief", "op",
+        }
+        if command not in report_commands:
+            shown = f"<code>/{html.escape(command)}</code>" if command else "that command"
+            return f"Unknown command: {shown}. Use /help to see what I can do."
+        if command == "op" and not argument.isdigit():
+            return "Usage: /op &lt;operator id&gt;"
+
         report = self.build_report(allow_cached=True)
         stamp = self._freshness()
 
@@ -266,7 +275,7 @@ class Bot:
             return brief_mod.render(report)
         if command == "op":
             return self._operator_detail(argument)
-        return f"Unknown command: {command}. /help for the list."
+        raise AssertionError(f"unhandled report command: {command}")
 
     def _freshness(self) -> str:
         """Every cached answer says how old it is. A stale number presented as current is the exact
@@ -285,7 +294,7 @@ class Bot:
         snapshot = self.last_snapshot or sources.collect(self.chain, self.config, self.ipfs)
         match = next((o for o in snapshot.operators if o.id == wanted), None)
         if match is None:
-            return f"No operator {wanted}."
+            return f"Operator #{wanted} was not found."
 
         counters = match.counters
         struck = []

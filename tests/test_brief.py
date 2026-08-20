@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from csmbot import brief
 from csmbot.metrics import (
-    Capacity, CohortStats, CurveChange, Frame, Funnel, GateFunnel, Operators, Report,
+    Capacity, CohortStats, CurveChange, Frame, Funnel, GateFunnel, Operators, Performance, Report,
 )
 
 
@@ -194,6 +194,23 @@ class TestRendering(unittest.TestCase):
     def test_empty_frame_block_is_omitted(self):
         report = make_report(frame=None)
         self.assertNotIn("Rewards frame", brief.render(report))
+
+    def test_performance_uses_explicit_reward_and_validator_language(self):
+        report = make_report()
+        report.performance = Performance(
+            frame_date="2026-08-03", previous_frame_date="2026-07-06", interval_days=28,
+            operators_in_tree=567, earned=375, earned_nothing=159, first_time=33,
+            stopped=19, resumed=7, idle_retired=148, idle_running=11,
+        )
+        lines = brief._performance_block(report)
+        self.assertIn("375 returning operators earned rewards", lines)
+        self.assertIn("33 operators earned rewards for the first time", lines)
+        self.assertIn("19 operators earned rewards last frame, not this one", lines)
+        self.assertIn("7 operators earned rewards this frame after missing the last", lines)
+        self.assertIn("148 operators earned no rewards · no active validators now", lines)
+        self.assertIn("11 operators earned no rewards · active validators now", lines)
+        self.assertTrue(any("Next frame due 31 Aug" in line for line in lines))
+        self.assertFalse(any("stopped" in line or "resumed" in line for line in lines))
 
     def test_week_key_is_stable_within_a_week(self):
         monday = datetime(2026, 8, 17, 9, tzinfo=timezone.utc)

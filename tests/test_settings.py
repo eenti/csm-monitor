@@ -94,6 +94,8 @@ class TestScheduleCommands(SettingsCase):
         self.assertIn("Monday 20:00 UTC", rendered)
         self.assertIn("Daily collection</b>  06:00 UTC", rendered)
         self.assertNotIn("UTC+7", rendered)
+        self.assertIn("survive redeploys", rendered)
+        self.assertNotIn("/data", rendered)
 
 
 class TestRoundCommands(SettingsCase):
@@ -134,6 +136,17 @@ class TestBotIntegration(SettingsCase):
 
         bot.build_report = unexpected_report
         self.assertIn("CSM settings", bot.handle_command("/settings"))
+
+    def test_invalid_commands_and_incomplete_operator_lookup_do_not_read_chain(self):
+        bot = Bot.__new__(Bot)
+        bot.settings = self.settings
+
+        def unexpected_report(*args, **kwargs):
+            self.fail("invalid command triggered a live report build")
+
+        bot.build_report = unexpected_report
+        self.assertIn("Unknown command", bot.handle_command("/wat"))
+        self.assertIn("Usage", bot.handle_command("/op"))
 
     def test_settings_callback_is_limited_to_the_configured_chat(self):
         bot = Bot.__new__(Bot)
