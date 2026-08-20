@@ -8,7 +8,7 @@ redeploy does not silently undo them. Tokens and RPC credentials never pass thro
 from __future__ import annotations
 
 import html
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from typing import Any
 
 
@@ -114,16 +114,12 @@ class RuntimeSettings:
     # -- display ------------------------------------------------------------
 
     def render(self, notice: str | None = None) -> str:
-        local_day, local_hour = _local_weekly(
-            self.config.brief_weekday, self.config.brief_hour_utc
-        )
         lines = [
             "⚙️ <b>CSM settings</b>",
             "",
             f"<b>Weekly brief</b>  {WEEKDAYS[self.config.brief_weekday]} "
-            f"{self.config.brief_hour_utc:02d}:00 UTC · {local_day} {local_hour:02d}:00 UTC+7",
-            f"<b>Daily collection</b>  {self.config.collect_hour_utc:02d}:00 UTC · "
-            f"{(self.config.collect_hour_utc + 7) % 24:02d}:00 UTC+7",
+            f"{self.config.brief_hour_utc:02d}:00 UTC",
+            f"<b>Daily collection</b>  {self.config.collect_hour_utc:02d}:00 UTC",
             "",
             "<b>Assessment rounds</b>",
         ]
@@ -320,9 +316,3 @@ def _parse_index(raw: str, count: int) -> int:
     if not clean.isdigit() or not 1 <= int(clean) <= count:
         raise SettingsError(f"round number must be between 1 and {count}")
     return int(clean) - 1
-
-
-def _local_weekly(weekday: int, hour: int) -> tuple[str, int]:
-    monday = datetime(2026, 8, 17, tzinfo=timezone.utc)
-    local = monday + timedelta(days=weekday, hours=hour + 7)
-    return WEEKDAYS[local.weekday()], local.hour

@@ -88,11 +88,12 @@ class TestScheduleCommands(SettingsCase):
         self.settings.handle_callback("cfg:brief_hour:1")
         self.assertEqual(self.config.brief_hour_utc, 0)
 
-    def test_render_shows_utc_plus_seven_day_rollover(self):
+    def test_render_shows_only_utc_schedule(self):
         self.settings.handle_command("weekly", "mon 20")
         rendered = self.settings.render()
         self.assertIn("Monday 20:00 UTC", rendered)
-        self.assertIn("Tuesday 03:00 UTC+7", rendered)
+        self.assertIn("Daily collection</b>  06:00 UTC", rendered)
+        self.assertNotIn("UTC+7", rendered)
 
 
 class TestRoundCommands(SettingsCase):

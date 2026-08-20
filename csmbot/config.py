@@ -136,8 +136,6 @@ class Config:
         if not 0 <= brief_weekday <= 6:
             raise ConfigError("CSM_BRIEF_WEEKDAY must be 0-6 (0 = Monday)")
 
-        # 07:00 UTC is 14:00 in Ho Chi Minh City, which is UTC+7 all year — Vietnam has not
-        # observed daylight saving since 1975, so this needs no seasonal adjustment.
         brief_hour = _int("CSM_BRIEF_HOUR_UTC", 7)
         if not 0 <= brief_hour <= 23:
             raise ConfigError("CSM_BRIEF_HOUR_UTC must be 0-23")
