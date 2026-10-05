@@ -398,3 +398,128 @@ class TestCollapsedSummaryLines(unittest.TestCase):
         report.pools = [PoolDelta("Rocket Pool", 4152, None, 14297, None, 457504, "")]
         first = self._first_blockquote_line(brief._pools_block(report))
         self.assertIn("14,297 val", first)
+
+
+class TestWeeklyChangeIsVisible(unittest.TestCase):
+    """The brief is weekly, so the week has to be legible at a glance.
+
+    Before this it was not: deltas appeared with no stated baseline, the funnel block carried no
+    movement at all, and an urgent headline pushed the week's movement out of the message entirely.
+    """
+
+    def test_window_line_names_the_baseline_and_the_span(self):
+        report = make_report(operators=make_operators(new_ids=[], departed_ids=[]),
+                             comparison_day="2026-08-13", comparison_days=7)
+        self.assertIn("vs <b>13 Aug</b> · 7d", brief.render(report))
+
+    def test_a_span_that_is_not_a_week_says_so(self):
+        report = make_report(operators=make_operators(new_ids=[], departed_ids=[]),
+                             comparison_day="2026-08-06", comparison_days=14)
+        self.assertIn("14d — history gap, not a full week", brief.render(report))
+
+    def test_a_short_window_is_not_called_a_gap(self):
+        report = make_report(operators=make_operators(new_ids=[], departed_ids=[]),
+                             comparison_day="2026-08-18", comparison_days=2)
+        rendered = brief.render(report)
+        self.assertIn("2d — all the history there is", rendered)
+        self.assertNotIn("history gap", rendered)
+
+    def test_first_run_has_no_window_line(self):
+        self.assertNotIn("🗓", brief.render(make_report()))
+
+    def test_movement_rides_along_when_the_headline_is_urgent(self):
+        # An ejection warning outranks operator movement, and used to hide it completely.
+        from csmbot.metrics import StrikeRisk, Strikes
+        report = make_report(
+            operators=make_operators(new_ids=[1, 2], departed_ids=[], new_by_curve={2: 2}),
+            gates=[make_gate(claimed=291, operators_on_curve=291, claimed_change=2)],
+            comparison_day="2026-08-13", comparison_days=7,
+        )
+        report.strikes = Strikes(available=True, struck_keys=908, struck_operators=89,
+                                 ejectable=[StrikeRisk(367, 0, "0xa", 12, 3, 3, 9)],
+                                 thresholds={0: (6, 3)})
+        rendered = brief.render(report)
+        self.assertIn("ejection threshold", rendered)
+        self.assertIn("2 joined · 0 left · 2 gate claims", rendered)
+
+    def test_movement_is_not_printed_twice(self):
+        report = make_report(
+            operators=make_operators(new_ids=[1, 2], departed_ids=[]),
+            gates=[make_gate(claimed_change=0)],
+            comparison_day="2026-08-13", comparison_days=7,
+        )
+        rendered = brief.render(report)
+        self.assertEqual(rendered.count("2 joined · 0 left · 0 gate claims"), 1)
+
+    def test_a_quiet_week_states_its_zeros(self):
+        report = make_report(operators=make_operators(new_ids=[], departed_ids=[]),
+                             gates=[make_gate(claimed_change=0)],
+                             comparison_day="2026-08-13", comparison_days=7)
+        self.assertIn("0 joined · 0 left · 0 gate claims", brief.render(report))
+
+    def test_gate_claims_reach_the_headline_even_with_no_joins(self):
+        # A claim can be an existing operator changing cohort, which moves neither count.
+        report = make_report(operators=make_operators(new_ids=[], departed_ids=[]),
+                             gates=[make_gate(claimed=290, operators_on_curve=290,
+                                              claimed_change=1)])
+        self.assertIn("1 gate claim", brief.headline(report))
+
+
+class TestFunnelBlockShowsTheWeek(unittest.TestCase):
+    def test_a_gate_nobody_claimed_says_so_rather_than_going_blank(self):
+        report = make_report(gates=[make_gate(claimed_change=0)])
+        self.assertIn("none claimed", "\n".join(brief._funnel_block(report)))
+
+    def test_claims_lead_the_line(self):
+        report = make_report(gates=[make_gate(claimed=291, operators_on_curve=291,
+                                              claimed_change=2)])
+        self.assertIn("ICS 291/514 · <b>+2 claimed</b>", "\n".join(brief._funnel_block(report)))
+
+    def test_a_grown_tree_is_reported_apart_from_claims(self):
+        report = make_report(gates=[make_gate(eligible=544, unclaimed=255, claimed_change=0,
+                                              eligible_change=30)])
+        line = "\n".join(brief._funnel_block(report))
+        self.assertIn("none claimed", line)
+        self.assertIn("+30 eligible", line)
+
+    def test_claims_off_curve_are_a_measurement_not_a_warning(self):
+        # Mainnet 2026-08-28: 291 ICS claims, 290 operators on curve 2, operator 327 having moved
+        # to IDVTC. This used to render as "funnel integrity failed" at the top of the brief, and
+        # did on every Monday from 2026-08-31 to 2026-10-05 (304 claims vs 303 operators).
+        report = make_report(gates=[make_gate(claimed=291, operators_on_curve=290, off_curve=1,
+                                              claimed_change=2)])
+        rendered = brief.render(report)
+        self.assertIn("1 claim off curve", rendered)
+        self.assertNotIn("integrity failed", rendered)
+
+    def test_off_curve_does_not_assert_a_cause(self):
+        # A cohort move is the usual cause, not a guaranteed one, so the line must not claim it.
+        report = make_report(gates=[make_gate(claimed=291, operators_on_curve=289, off_curve=2)])
+        line = "\n".join(brief._funnel_block(report))
+        self.assertIn("2 claims off curve", line)
+        self.assertNotIn("another curve", line)
+        self.assertNotIn("moved", line)
+
+    def test_no_history_prints_levels_without_inventing_a_delta(self):
+        line = "\n".join(brief._funnel_block(make_report()))
+        self.assertNotIn("claimed", line.replace("Claim funnel", ""))
+
+
+class TestDeltaFormatting(unittest.TestCase):
+    """`(0)` and no parenthesis at all mean different things: one is a measurement, one is an
+    absence of one."""
+
+    def test_zero_is_printed(self):
+        self.assertEqual(brief._delta(0), " (0)")
+
+    def test_absent_is_blank(self):
+        self.assertEqual(brief._delta(None), "")
+
+    def test_negatives_use_a_real_minus_sign(self):
+        self.assertEqual(brief._delta(-137), " (−137)")
+
+    def test_thousands_are_grouped(self):
+        self.assertEqual(brief._delta(2087), " (+2,087)")
+
+    def test_percentages_keep_their_digits(self):
+        self.assertEqual(brief._delta(0.021, 2), " (+0.02)")

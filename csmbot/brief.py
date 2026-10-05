@@ -19,7 +19,7 @@ because that is what you need to look someone up or contact them; a gate links t
 from __future__ import annotations
 
 import html
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from .metrics import Performance, Report, curve_name
 
@@ -42,6 +42,66 @@ def _pct(value: float | None, digits: int = 0) -> str:
 
 def _signed(value: int) -> str:
     return f"+{value}" if value > 0 else str(value)
+
+
+def _delta(value: int | float | None, digits: int = 0) -> str:
+    """`(+2)`, `(−137)`, `(0)` — the parenthesised movement that follows a level.
+
+    Rendered even at zero. A level with no delta beside it and a level that did not move look
+    identical otherwise, and on this brief "nothing moved this week" is a finding rather than a
+    blank — it is the shape the originating case took.
+    """
+    if value is None:
+        return ""
+    if not value:
+        return " (0)"
+    return f" ({'+' if value > 0 else '−'}{abs(value):,.{digits}f})"
+
+
+def _movement_summary(report: Report) -> str:
+    """The week in one line: joins, departures, gate claims, cohort moves.
+
+    Every count is printed even at zero. A week where nothing happened has to read as a week where
+    nothing happened — that is the shape the originating case took, and an omitted line reads as an
+    omitted measurement.
+    """
+    operators = report.operators
+    if operators.new_ids is None or operators.departed_ids is None:
+        return ""
+    claims = sum(g.claimed_change or 0 for g in report.funnel.gates)
+    parts = [
+        f"{len(operators.new_ids)} joined",
+        f"{len(operators.departed_ids)} left",
+        _plural(claims, "gate claim"),
+    ]
+    if operators.curve_changes:
+        parts.append(f"{len(operators.curve_changes)} changed type")
+    return " · ".join(parts)
+
+
+def _window(report: Report, headline_text: str) -> str | None:
+    """One line naming the comparison date, so every delta below it has a stated baseline.
+
+    It also carries the movement summary whenever the headline is taken by something else. The
+    headline is ordered by urgency, so an ejection warning or a late frame pushes the week's
+    movement out of sight entirely — which is the opposite of what a weekly brief is for.
+    """
+    if report.comparison_day is None:
+        return None
+    span = report.comparison_days
+    since = f"{date.fromisoformat(report.comparison_day):%d %b}"
+    if span is None:
+        line = f"🗓 vs <b>{since}</b>"
+    elif span == 7:
+        line = f"🗓 vs <b>{since}</b> · 7d"
+    elif span < 7:
+        # Early days, or a container that has not been up a week. Not the same thing as a gap.
+        line = f"🗓 vs <b>{since}</b> · {span}d — all the history there is"
+    else:
+        line = f"🗓 vs <b>{since}</b> · {span}d — history gap, not a full week"
+
+    summary = _movement_summary(report)
+    return f"{line} — {summary}" if summary and summary != headline_text else line
 
 
 def _plural(count: int, singular: str, plural: str | None = None) -> str:
@@ -84,8 +144,8 @@ def headline(report: Report) -> str:
     if broken:
         gate = broken[0]
         return (
-            f"⚠️ {gate.label} funnel integrity failed — {gate.claimed} claims vs "
-            f"{gate.operators_on_curve} operators. Funnel numbers unverified."
+            f"⚠️ {gate.label} funnel integrity failed — {gate.operators_on_curve} operators on "
+            f"curve {gate.curve_id} vs only {gate.claimed} claims. Funnel numbers unverified."
         )
 
     unavailable = [g for g in report.funnel.gates if not g.available]
@@ -111,6 +171,11 @@ def headline(report: Report) -> str:
         gate = zero_claim[0]
         return f"None of the {gate.eligible} addresses on the {gate.label} gate have claimed."
 
+    # Gate claims belong in the headline: "a batch was made eligible and nobody claimed" is the case
+    # this bot was built for, and it is invisible in a joins-and-departures sentence — a claim can be
+    # an existing operator changing cohort, which moves neither count.
+    claims = sum(g.claimed_change or 0 for g in report.funnel.gates)
+
     if operators.departed_ids is not None and operators.new_ids is not None:
         joined, left = len(operators.new_ids), len(operators.departed_ids)
         net = joined - left
@@ -119,8 +184,9 @@ def headline(report: Report) -> str:
             return f"Operators down {abs(net)} — {left} left, {joined} joined" + (
                 f", {ics} ICS." if ics else "."
             )
-        if joined or left:
-            return f"{joined} joined · {left} left · net {_signed(net)}"
+        if joined or left or claims:
+            # Verbatim the window line's sentence, so the two never say the same thing twice.
+            return _movement_summary(report)
 
     largest = max(
         (g for g in report.funnel.gates if g.available and g.unclaimed > 0),
@@ -161,13 +227,14 @@ def _operators_block(report: Report) -> list[str]:
             )
             lines.append(f"⇄ {len(operators.curve_changes)} changed type — {detail}")
         if not (operators.new_ids or operators.departed_ids or operators.curve_changes):
-            lines.append(f"→ no movement since {report.comparison_day}")
+            lines.append("→ no movement")
     else:
         lines.append("→ first run, movement starts next week")
 
     lines.append(
         f"{operators.active} active · {operators.active_keys:,} keys · "
-        f"{operators.total} registered · {operators.never_funded} never funded"
+        f"{operators.total} registered{_delta(operators.total_change)} · "
+        f"{operators.never_funded} never funded"
     )
 
     # No mutability footnote here: the caveat matters for how the numbers are *computed* — which is
@@ -192,16 +259,36 @@ def _operators_block(report: Report) -> list[str]:
 
 
 def _funnel_block(report: Report) -> list[str]:
+    """The block this bot exists for, so the week's movement leads each line rather than the level.
+
+    "none claimed" is spelled out instead of being left to an absent number. A gate that nobody acted
+    on all week is the finding, and a reader cannot tell a zero from a missing delta.
+    """
     lines = ["🎯 <b>Claim funnel</b>"]
     for gate in report.funnel.gates:
         if not gate.available:
             lines.append(f"{gate.label} — tree unreadable")
             continue
-        tree = _link(IPFS_VIEW.format(gate.tree_cid), "list")
-        lines.append(
-            f"{gate.label} {gate.claimed}/{gate.eligible} · {_pct(gate.claim_rate)} · "
-            f"{gate.unclaimed} open · {tree}"
-        )
+
+        moved = []
+        if gate.claimed_change is not None:
+            moved.append(f"+{gate.claimed_change} claimed" if gate.claimed_change
+                         else "none claimed")
+        if gate.eligible_change:
+            moved.append(f"{_signed(gate.eligible_change)} eligible")
+
+        parts = [f"{gate.label} {gate.claimed}/{gate.eligible}"]
+        if moved:
+            parts.append(f"<b>{' · '.join(moved)}</b>")
+        parts += [_pct(gate.claim_rate), f"{gate.unclaimed} open"]
+        # Claims with no operator on the curve to match them — what used to be reported as a funnel
+        # integrity failure. Printed as a measurement because the cause is not observable from state
+        # (see `metrics.funnel`). It sits after the levels, not with the movement, because it is a
+        # standing state and does not reset weekly.
+        if gate.off_curve:
+            parts.append(f"{_plural(gate.off_curve, 'claim')} off curve")
+        parts.append(_link(IPFS_VIEW.format(gate.tree_cid), "list"))
+        lines.append(" · ".join(parts))
     return lines
 
 
@@ -212,10 +299,13 @@ def _capacity_block(report: Report) -> list[str]:
     # validator counts while other modules run 0x02 validators holding more than 32 ETH, so this ratio
     # is not a share of stake — hence the ETH number rather than a qualifier nobody wants to read.
     lines.append(
-        f"{_pct(capacity.validator_share_pct, 2)} of {_pct(capacity.limit_pct, 2)} cap · "
-        f"{capacity.csm_stake_eth:,} ETH"
+        f"{_pct(capacity.validator_share_pct, 2)}{_delta(capacity.share_change, 2)} of "
+        f"{_pct(capacity.limit_pct, 2)} cap · {capacity.csm_stake_eth:,} ETH"
     )
-    lines.append(f"Headroom {capacity.headroom:,} val · {capacity.headroom_eth:,} ETH")
+    lines.append(
+        f"Headroom {capacity.headroom:,} val{_delta(capacity.headroom_change)} · "
+        f"{capacity.headroom_eth:,} ETH"
+    )
     if capacity.not_yet_contributing is not None and capacity.not_yet_contributing >= 1:
         # Verified against the beacon chain's pending-deposit queue: this gap is predominantly
         # validators awaiting activation, not balance shortfall. See ModuleState.balance_gap_validators.
@@ -264,7 +354,10 @@ def _strikes_block(report: Report) -> list[str]:
         f" · {strikes.departed_with_strikes} already left"
         if strikes.departed_with_strikes else ""
     )
-    lines.append(f"{strikes.struck_keys:,} keys · {strikes.struck_operators} operators{tail}")
+    lines.append(
+        f"{strikes.struck_keys:,} keys{_delta(strikes.keys_change)} · "
+        f"{strikes.struck_operators} NOs{_delta(strikes.operators_change)}{tail}"
+    )
 
     # "worst key" is the highest strike count on any single key, which is what decides ejectability.
     # The ejection limit is not a column: it is implied by the type, and the reader sets those limits.
@@ -401,8 +494,14 @@ def _footer(report: Report) -> list[str]:
 
 
 def render(report: Report) -> str:
+    lead = headline(report)
+    header = [f"📊 <b>CSM · {report.day}</b>", lead]
+    window = _window(report, lead)
+    if window:
+        header.append(window)
+
     blocks: list[list[str]] = [
-        [f"📊 <b>CSM · {report.day}</b>", headline(report)],
+        header,
         _operators_block(report),
         _funnel_block(report),
         _capacity_block(report),

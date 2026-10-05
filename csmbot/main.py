@@ -40,6 +40,12 @@ from .telegram import Telegram
 HEALTH_STALE_HOURS = 30
 POLL_TIMEOUT = 30
 
+# The brief is weekly, so everything it labels "this week" is diffed against a snapshot this many
+# days back. History is searched a week beyond that, so a few missed collections still land on a
+# real comparison rather than dropping every delta.
+COMPARISON_WINDOW_DAYS = 7
+COMPARISON_SEARCH_DAYS = COMPARISON_WINDOW_DAYS + 7
+
 
 def log(message: str) -> None:
     print(f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} {message}", flush=True)
@@ -100,6 +106,27 @@ class Bot:
 
         capacity = metrics_mod.capacity(snapshot, self.config.module_id, [])
         put(snapshot.day, "constraint", None, run_id, snapshot.block, detail=capacity.constraint)
+        put(snapshot.day, "capacity_state", None, run_id, snapshot.block, detail={
+            "share_pct": capacity.validator_share_pct,
+            "headroom": capacity.headroom,
+            "active": capacity.active,
+        })
+
+        # Who has consumed each gate, so next week's claim counts can be differenced. Sets rather
+        # than counts: a count subtraction cannot tell a new claim from an address that stopped
+        # being claimed, and the funnel is the block this bot exists for.
+        # Gates whose tree did not verify are skipped, so a bad read cannot become next week's
+        # baseline and manufacture a delta.
+        put(snapshot.day, "gate_state", None, run_id, snapshot.block, detail={
+            g.label: {"claimed": list(g.claimed), "eligible": len(g.eligible), "root": g.tree_root}
+            for g in snapshot.gates if g.root_verified
+        })
+
+        strike_state = metrics_mod.strikes(snapshot)
+        if strike_state.available:
+            put(snapshot.day, "strike_state", None, run_id, snapshot.block, detail={
+                "keys": strike_state.struck_keys, "operators": strike_state.struck_operators,
+            })
 
         from . import competitors
         put(snapshot.day, "pools", None, run_id, snapshot.block,
@@ -156,25 +183,26 @@ class Bot:
             if row["value"] is not None
         ]
 
-        previous_operators = None
-        comparison_day = None
-        for row in reversed(self.store.metric_series("operator_state", _days_ago(10), snapshot.day)):
-            if row["day"] == snapshot.day or not row["detail"]:
-                continue
-            previous_operators = {
-                int(k): v for k, v in json.loads(row["detail"]).items()
-            }
-            comparison_day = row["day"]
-            break
+        # One comparison day for the whole report. `operator_state` is the oldest series and the
+        # one every brief needs, so it picks the day; every other series is then read at that same
+        # day, or not at all. Letting each block find its own nearest snapshot would put a six-day
+        # delta next to an eight-day one under a single "this week" heading.
+        since = _days_ago(COMPARISON_SEARCH_DAYS)
+        comparison = _pick_comparison(
+            self.store.metric_series("operator_state", since, snapshot.day), snapshot.day
+        )
+        comparison_day = comparison["day"] if comparison else None
+        previous_operators = (
+            {int(k): v for k, v in json.loads(comparison["detail"]).items()} if comparison else None
+        )
+
+        def at_comparison(name: str):
+            if comparison_day is None:
+                return None
+            row = self.store.get_metric(comparison_day, name)
+            return json.loads(row["detail"]) if row and row["detail"] else None
 
         missing = [row["day"] for row in self.store.gaps_between(_days_ago(8), snapshot.day)]
-
-        previous_pools = None
-        for row in reversed(self.store.metric_series("pools", _days_ago(10), snapshot.day)):
-            if row["day"] == snapshot.day or not row["detail"]:
-                continue
-            previous_pools = json.loads(row["detail"])
-            break
 
         return metrics_mod.build(
             snapshot,
@@ -184,7 +212,10 @@ class Bot:
             comparison_day=comparison_day,
             missing_days=missing,
             frame_deltas=backfill_mod.deltas(self.store),
-            previous_pools=previous_pools,
+            previous_pools=at_comparison("pools"),
+            previous_gates=at_comparison("gate_state"),
+            previous_capacity=at_comparison("capacity_state"),
+            previous_strikes=at_comparison("strike_state"),
         )
 
     def send_brief(self, force: bool = False) -> bool:
@@ -505,6 +536,27 @@ def _summarise(record) -> str:
 
 def _days_ago(n: int) -> str:
     return (datetime.now(timezone.utc).date() - timedelta(days=n)).isoformat()
+
+
+def _pick_comparison(rows, day: str, window_days: int = COMPARISON_WINDOW_DAYS):
+    """The snapshot to diff against: the newest one at or before `day - window_days`.
+
+    **This used to take the newest prior row, which made every "this week" line a day-over-day
+    delta.** Collection runs daily, so the newest prior row is always yesterday. Checked against the
+    week of 2026-08-24, when two operators joined on the Monday, one moved ICS to IDVTC on the
+    Wednesday, and three gate claims landed between them: a Monday brief comparing against Sunday
+    would have reported no movement at all, in the one block this bot exists for.
+
+    Falls back to the oldest snapshot in range when history is shorter than the window. The report
+    carries the span it actually covers, so a short or stretched window is stated rather than
+    presented as a week.
+    """
+    usable = [r for r in rows if r["detail"] and r["day"] != day]
+    if not usable:
+        return None
+    target = (date.fromisoformat(day) - timedelta(days=window_days)).isoformat()
+    at_or_before = [r for r in usable if r["day"] <= target]
+    return at_or_before[-1] if at_or_before else usable[0]
 
 
 def main(argv: list[str]) -> int:

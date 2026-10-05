@@ -47,6 +47,7 @@ it does not ship.
 | Block | Contents |
 |---|---|
 | Headline | One deterministic sentence: the most significant condition that is true this week |
+| Window | The date every delta below is measured from, and the week's movement in one line |
 | Operators | New and departed operators, split by cohort. The main block |
 | Claim funnel | Eligible → claimed → keys uploaded → active, per gate list and assessment round |
 | Capacity | Stake share, headroom under the limit, 7-day rate, projected runway, binding constraint |
@@ -54,6 +55,11 @@ it does not ship.
 | Performance | Frame summary. Only appears in weeks where a frame was published |
 
 Blocks with nothing to report are omitted rather than padded.
+
+**Every delta is seven days, and says so.** The brief names the snapshot it is comparing against and
+the span that comparison actually covers, because a missed collection makes the real window six days
+or eight. Movement is printed even when it is zero — `(0)` beside a level, "none claimed" beside a
+gate — since a number that did not move and a number that was never measured must not look alike.
 
 ### Alerts
 

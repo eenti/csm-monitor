@@ -62,6 +62,10 @@ class Capacity:
     window_days: int = 0
     stake_eth: int = 0
     not_yet_contributing: float | None = None
+    # Movement against the comparison snapshot. None until there is one to compare against.
+    share_change: float | None = None
+    headroom_change: int | None = None
+    active_change: int | None = None
 
     @property
     def csm_stake_eth(self) -> int:
@@ -73,10 +77,17 @@ class Capacity:
         return self.headroom * 32
 
 
-def capacity(snapshot: Snapshot, module_id: int, history: list[tuple[str, float]]) -> Capacity:
+def capacity(
+    snapshot: Snapshot,
+    module_id: int,
+    history: list[tuple[str, float]],
+    previous: dict | None = None,
+) -> Capacity:
     """Share, headroom, growth rate and which side is actually binding.
 
     `history` is [(day, active_validators)] oldest first, from the store.
+    `previous` is the same three figures from the comparison snapshot, so the brief can show where
+    each one moved rather than only where it stands.
 
     The constraint is the judgement call worth being careful about. CSM is **capacity**-constrained
     when keys are waiting but cannot be deposited, and **supply**-constrained when there is room under
@@ -121,6 +132,15 @@ def capacity(snapshot: Snapshot, module_id: int, history: list[tuple[str, float]
     else:
         constraint = "unknown"
 
+    share_change = headroom_change = active_change = None
+    if previous:
+        if previous.get("share_pct") is not None:
+            share_change = share - previous["share_pct"]
+        if previous.get("headroom") is not None:
+            headroom_change = headroom - int(previous["headroom"])
+        if previous.get("active") is not None:
+            active_change = module.active - int(previous["active"])
+
     return Capacity(
         validator_share_pct=share,
         limit_pct=limit,
@@ -134,6 +154,9 @@ def capacity(snapshot: Snapshot, module_id: int, history: list[tuple[str, float]
         window_days=window,
         stake_eth=module.nominal_stake_eth,
         not_yet_contributing=module.balance_gap_validators,
+        share_change=share_change,
+        headroom_change=headroom_change,
+        active_change=active_change,
     )
 
 
@@ -173,6 +196,15 @@ class Operators:
     departed_by_curve: dict[int, int] = field(default_factory=dict)
     # Operators that moved between cohorts without joining or leaving CSM.
     curve_changes: list[CurveChange] = field(default_factory=list)
+
+    @property
+    def total_change(self) -> int | None:
+        """Change in registered operators over the comparison window.
+
+        Equal to the number of joins: `getNodeOperatorsCount()` only ever increases — an operator
+        that withdraws every key stays registered — so there is nothing to subtract.
+        """
+        return None if self.new_ids is None else len(self.new_ids)
 
 
 def operators(
@@ -275,6 +307,13 @@ class GateFunnel:
     # batch against who has claimed, which a count cannot answer.
     claimed_addresses: list[str] = field(default_factory=list)
     unclaimed_addresses: list[str] = field(default_factory=list)
+    # Claims on this gate with no operator on its curve to match them. A count, not a cause — see the
+    # note in `funnel`. Reported, not alarmed.
+    off_curve: int = 0
+    # Movement against the comparison snapshot. None until there is one to compare against.
+    new_claims: list[str] = field(default_factory=list)
+    claimed_change: int | None = None
+    eligible_change: int | None = None
 
 
 @dataclass
@@ -282,14 +321,31 @@ class Funnel:
     gates: list[GateFunnel] = field(default_factory=list)
 
 
-def funnel(snapshot: Snapshot) -> Funnel:
-    """Eligibility versus claims per gate, plus an integrity check.
+def funnel(snapshot: Snapshot, previous: dict | None = None) -> Funnel:
+    """Eligibility versus claims per gate, movement over the window, and an integrity check.
 
-    Every claim on a gate creates exactly one node operator on that gate's bond curve, so the count of
-    claims and the count of operators on the curve must agree. Verified on mainnet 2026-08-20: the ICS
-    gate reported 289 claims and 289 operators sat on curve 2. If those two ever diverge, one of the
-    two readings is wrong and the funnel numbers should not be trusted — which is exactly the kind of
-    silent error that must surface rather than ship.
+    **The integrity check only fails in the direction the gate's claims cannot explain.** Every way
+    of consuming a gate ends in `ACCOUNTING.setBondCurve(nodeOperatorId, curveId)` — checked in
+    `VettedGate.sol` (lidofinance/staking-modules): all three `addNodeOperator*` paths and
+    `claimBondCurve`. So each claim put one operator on the gate's curve when it happened, and more
+    operators on the curve than claims means a misread, or a curve set some other way. Either way the
+    funnel cannot be reconciled and must not be trusted.
+
+    More claims than operators is normal. `claimBondCurve` lets an existing operator move to a later
+    curve, which leaves its original gate consumed while the operator sits somewhere else. Measured on
+    mainnet 2026-08-26: operator 327 consumed the ICS gate months ago and then claimed IDVTC, leaving
+    ICS at 291 claims against 290 operators on curve 2. An equality check called that a data-integrity
+    failure and put "funnel numbers unverified" at the top of every brief from then on — a warning
+    about two numbers that were both correct.
+
+    The excess is reported as `off_curve`, a count with no cause attached. A cohort move is the usual
+    cause, not the only possible one: `claimBondCurve` does not check whether the operator is already
+    on the curve, so an operator whose owner address changed could consume the same gate twice.
+
+    `previous` maps gate label -> {"claimed": [addresses], "eligible": int} from the comparison
+    snapshot, and produces the week's movement. Claim sets are differenced rather than counts
+    subtracted, so a gate that ever un-consumed an address would show up as such instead of quietly
+    netting against a new claim.
     """
     result = Funnel()
     curve_counts: dict[int, int] = {}
@@ -299,6 +355,17 @@ def funnel(snapshot: Snapshot) -> Funnel:
     for gate in snapshot.gates:
         available = bool(gate.eligible) and gate.root_verified
         on_curve = curve_counts.get(gate.curve_id, 0)
+
+        before = (previous or {}).get(gate.label)
+        new_claims: list[str] = []
+        claimed_change = eligible_change = None
+        if before is not None:
+            was_claimed = {a.lower() for a in before.get("claimed", ())}
+            new_claims = [a for a in gate.claimed if a.lower() not in was_claimed]
+            claimed_change = len(gate.claimed) - len(was_claimed)
+            if before.get("eligible") is not None:
+                eligible_change = len(gate.eligible) - int(before["eligible"])
+
         result.gates.append(GateFunnel(
             label=gate.label,
             curve_id=gate.curve_id,
@@ -310,9 +377,13 @@ def funnel(snapshot: Snapshot) -> Funnel:
             tree_root=gate.tree_root,
             tree_cid=gate.tree_cid,
             available=available,
-            integrity_ok=(not available) or on_curve == len(gate.claimed),
+            integrity_ok=(not available) or on_curve <= len(gate.claimed),
             claimed_addresses=list(gate.claimed),
             unclaimed_addresses=list(gate.unclaimed),
+            off_curve=max(len(gate.claimed) - on_curve, 0),
+            new_claims=new_claims,
+            claimed_change=claimed_change,
+            eligible_change=eligible_change,
         ))
 
     return result
@@ -372,9 +443,12 @@ class Strikes:
     # Operators that reached the threshold and have since withdrawn everything. Kept out of the lists
     # above but counted, so the number is not silently lost.
     departed_with_strikes: int = 0
+    # Movement against the comparison snapshot. None until there is one to compare against.
+    keys_change: int | None = None
+    operators_change: int | None = None
 
 
-def strikes(snapshot) -> Strikes:
+def strikes(snapshot, previous: dict | None = None) -> Strikes:
     """Which operators are ejectable, and which are one strike away.
 
     **The ejection threshold is per bond curve, not global.** Read on-chain 2026-08-20: curves 0, 1
@@ -431,6 +505,12 @@ def strikes(snapshot) -> Strikes:
             result.ejectable.append(risk)
         elif worst == threshold - 1:
             result.at_risk.append(risk)
+
+    if previous:
+        if previous.get("keys") is not None:
+            result.keys_change = result.struck_keys - int(previous["keys"])
+        if previous.get("operators") is not None:
+            result.operators_change = result.struck_operators - int(previous["operators"])
 
     result.ejectable.sort(key=lambda r: (-r.worst_key, -r.struck_keys))
     result.at_risk.sort(key=lambda r: -r.struck_keys)
@@ -535,6 +615,10 @@ class Report:
     warnings: list[str] = field(default_factory=list)
     missing_days: list[str] = field(default_factory=list)
     comparison_day: str | None = None
+    # How many days the comparison actually spans. Stated rather than assumed: the brief is weekly,
+    # but a run missed on the target day makes the real window six or eight, and a delta labelled
+    # "this week" that covers three days is worse than no delta at all.
+    comparison_days: int | None = None
 
 
 def build(
@@ -547,19 +631,26 @@ def build(
     now: datetime | None = None,
     frame_deltas=None,
     previous_pools: dict | None = None,
+    previous_gates: dict | None = None,
+    previous_capacity: dict | None = None,
+    previous_strikes: dict | None = None,
 ) -> Report:
     ops = operators(snapshot, previous_operators)
+    span = None
+    if comparison_day:
+        span = (date.fromisoformat(snapshot.day) - date.fromisoformat(comparison_day)).days
     return Report(
         day=snapshot.day,
         block=snapshot.block,
-        capacity=capacity(snapshot, module_id, active_history),
+        capacity=capacity(snapshot, module_id, active_history, previous_capacity),
         operators=ops,
-        funnel=funnel(snapshot),
+        funnel=funnel(snapshot, previous_gates),
         frame=frame(snapshot, now),
         performance=performance(frame_deltas or [], snapshot),
-        strikes=strikes(snapshot),
+        strikes=strikes(snapshot, previous_strikes),
         pools=pools(snapshot, previous_pools),
         warnings=list(snapshot.warnings),
         missing_days=list(missing_days or []),
         comparison_day=comparison_day,
+        comparison_days=span,
     )
